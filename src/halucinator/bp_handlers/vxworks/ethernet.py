@@ -20,7 +20,7 @@ log = logging.getLogger(__name__)
 # pylint: disable=fixme
 
 M_BLK_M_TYPE_OFFSET = 0x10
-M_BLK_M_FLAGS_OFFSET = 0x11
+M_BLK_M_FLAGS_OFFSET = 0x12
 M_BLK_PKT_HDR_RCVIF_OFFSET = 0x14
 M_BLK_PKT_HDR_LEN_OFFSET = 0x18
 M_BLK_P_CL_BLK_OFFSET = 0x1C
@@ -29,6 +29,12 @@ M_EXT = 0x01
 M_PKTHDR = 0x02
 M_BCAST = 0x10
 MT_DATA = 1
+
+IFF_UP = 0x1
+IFF_BROADCAST = 0x2
+IFF_RUNNING = 0x40
+IFF_SIMPLEX = 0x800
+DEFAULT_END_FLAGS = IFF_UP | IFF_BROADCAST | IFF_RUNNING | IFF_SIMPLEX
 
 
 class Ethernet(BPHandler):
@@ -40,6 +46,7 @@ class Ethernet(BPHandler):
     def __init__(self, model: Type[EthernetModel] = EthernetModel, interfaces: Optional[Dict[str, Any]] = None) -> None:
         super().__init__()
         self.mac: bytes = b""
+        self.flags: int = DEFAULT_END_FLAGS
         self.p_dev: Optional[int] = None
         self.p_net_pool: Optional[int] = None
         self.cl_pool_id: Optional[int] = None
@@ -133,7 +140,18 @@ class Ethernet(BPHandler):
         EIOCSFLAGS
         """
         log.debug("e_io_cs_flags")
-        self.mac = qemu.read_memory(ptr_mac_addr, 1, 10, raw=True)
+        self.flags = qemu.read_memory(ptr_mac_addr, 4, 1) | DEFAULT_END_FLAGS
+        log.debug("EIOCSFLAGS: %#x", self.flags)
+        return True, 0
+
+    def e_io_cg_flags(
+        self, qemu: HALQemuTarget, p_obj: int, ptr_mac_addr: int
+    ) -> Tuple[bool, int]:  # pylint: disable=unused-argument
+        """
+        EIOCGFLAGS
+        """
+        log.debug("e_io_cg_flags: %#x", self.flags)
+        qemu.write_memory(ptr_mac_addr, 4, self.flags)
         return True, 0
 
     # This is the IOCTL handler look up table
@@ -141,7 +159,7 @@ class Ethernet(BPHandler):
         0x40046912: e_io_cs_addr,
         0x40046907: e_io_cg_addr,
         0x40046905: e_io_cs_flags,  # "EIOCSFLAGS",
-        0x40046910: "EIOCGFLAGS",
+        0x40046910: e_io_cg_flags,
         0x80046906: "EIOCPOLLSTART",
         0x80046904: "EIOCPOLLSTOP",
         0x8004690E: "EIOCGMIB2",
@@ -368,12 +386,9 @@ class Ethernet(BPHandler):
             raise TypeError("Failed to get netTuple")
         frame = self.eth_model.get_rx_frame(self.get_eth_id(qemu))
         self.set_mblk(qemu, m_blk, frame)
-        ether_type = 0
-        if frame is not None and len(frame) >= 14:
-            ether_type = int.from_bytes(frame[12:14], "big")
         return qemu.call(
-            "muxTkReceive",
-            [self.p_dev, m_blk, 14, ether_type, 0, 0],
+            "muxReceive",
+            [self.p_dev, m_blk],
             self,
             "receive_done",
         )
