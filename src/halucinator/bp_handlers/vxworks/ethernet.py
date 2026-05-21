@@ -147,10 +147,10 @@ class Ethernet(BPHandler):
 
         mblk_out["mBlkPktHdr"] = qemu.read_memory((mblk + 0x1C), 4, 1)
         mblk_out["mBlkPktHdr_hex"] = hex(mblk_out["mBlkPktHdr"])
-        mblk_out["mBlkHdr"]["m_data_hex"] = hex(mblk_out["mBlkHdr"]["m_data"])
         mblk_out["mBlkHdr"]["mNext"] = qemu.read_memory((mblk + 0x0), 4, 1)
         mblk_out["mBlkHdr"]["mNextPkt"] = qemu.read_memory((mblk + 0x4), 4, 1)
         mblk_out["mBlkHdr"]["m_data"] = qemu.read_memory((mblk + 0x8), 4, 1)
+        mblk_out["mBlkHdr"]["m_data_hex"] = hex(mblk_out["mBlkHdr"]["m_data"])
         mblk_out["mBlkHdr"]["m_len"] = qemu.read_memory((mblk + 0xC), 4, 1)
         mblk_out["mBlkHdr"]["mType"] = qemu.read_memory((mblk + 0x10), 1, 1)
         mblk_out["mBlkHdr"]["mflags"] = qemu.read_memory((mblk + 0x12), 1, 1)
