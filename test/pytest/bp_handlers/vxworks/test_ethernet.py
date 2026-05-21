@@ -218,14 +218,18 @@ class TestEthernet:
         # set_mblk reads: m_data, flags; also calls get_packetdata which we mock
         qemu.read_memory = mock.Mock(side_effect=[
             0x9000,  # m_data ptr
-            0x01,    # flags at mblk + 0x12
+            0x01,    # flags at mblk + 0x11
         ])
 
         with mock.patch.object(eth, 'get_packetdata', return_value={}):
             eth.set_mblk(qemu, 0x8000, data)
 
-        # Should write data, m_len, pktHdr, and flags
-        assert qemu.write_memory.call_count >= 4
+        qemu.write_memory.assert_any_call(0x9000, 1, data, len(data), raw=True)
+        qemu.write_memory.assert_any_call(0x800C, 4, len(data))
+        qemu.write_memory.assert_any_call(0x8014, 4, 0)
+        qemu.write_memory.assert_any_call(0x8018, 4, len(data))
+        qemu.write_memory.assert_any_call(0x8010, 1, 1)
+        qemu.write_memory.assert_any_call(0x8011, 1, 0x03)
 
     def test_get_mblk(self, qemu):
         eth = Ethernet()
@@ -239,7 +243,12 @@ class TestEthernet:
             result = eth.get_mblk(qemu, 0x1000)
 
         eth.eth_model.get_rx_frame.assert_called_once_with("eth0")
-        qemu.call.assert_called_once()
+        qemu.call.assert_called_once_with(
+            "muxTkReceive",
+            [0x4000, 0x8000, 14, 0, 0, 0],
+            eth,
+            "receive_done",
+        )
 
     def test_get_mblk_null_raises(self, qemu):
         eth = Ethernet()

@@ -19,6 +19,17 @@ log = logging.getLogger(__name__)
 
 # pylint: disable=fixme
 
+M_BLK_M_TYPE_OFFSET = 0x10
+M_BLK_M_FLAGS_OFFSET = 0x11
+M_BLK_PKT_HDR_RCVIF_OFFSET = 0x14
+M_BLK_PKT_HDR_LEN_OFFSET = 0x18
+M_BLK_P_CL_BLK_OFFSET = 0x1C
+
+M_EXT = 0x01
+M_PKTHDR = 0x02
+M_BCAST = 0x10
+MT_DATA = 1
+
 
 class Ethernet(BPHandler):
     """
@@ -145,8 +156,14 @@ class Ethernet(BPHandler):
         mblk_out["addr"] = hex(mblk)
         mblk_out["mBlkHdr"] = {}
 
-        mblk_out["mBlkPktHdr"] = qemu.read_memory((mblk + 0x1C), 4, 1)
-        mblk_out["mBlkPktHdr_hex"] = hex(mblk_out["mBlkPktHdr"])
+        mblk_out["mBlkPktHdr"] = {
+            "rcvif": qemu.read_memory((mblk + M_BLK_PKT_HDR_RCVIF_OFFSET), 4, 1),
+            "len": qemu.read_memory((mblk + M_BLK_PKT_HDR_LEN_OFFSET), 4, 1),
+        }
+        mblk_out["mBlkPktHdr_hex"] = {
+            "rcvif": hex(mblk_out["mBlkPktHdr"]["rcvif"]),
+            "len": hex(mblk_out["mBlkPktHdr"]["len"]),
+        }
         mblk_out["mBlkHdr"]["mNext"] = qemu.read_memory((mblk + 0x0), 4, 1)
         mblk_out["mBlkHdr"]["mNextPkt"] = qemu.read_memory((mblk + 0x4), 4, 1)
         mblk_out["mBlkHdr"]["m_data"] = qemu.read_memory((mblk + 0x8), 4, 1)
@@ -159,7 +176,7 @@ class Ethernet(BPHandler):
             mblk_out["mBlkHdr"]["m_data"], 1, mblk_out["mBlkHdr"]["m_len"], raw=True
         )
         mblk_out["p_cl_blk"] = qemu.read_memory(
-            (mblk + 0x30),
+            (mblk + M_BLK_P_CL_BLK_OFFSET),
             4,
             1,
         )
@@ -334,10 +351,13 @@ class Ethernet(BPHandler):
         qemu.write_memory(m_data, 1, data, len(data), raw=True)
         m_len = mblk_addr + 0xC
         qemu.write_memory(m_len, 4, len(data))
-        qemu.write_memory(mblk_addr + 0x1C, 4, len(data))  # mBlkPktHdr
-        # flags
-        flags = qemu.read_memory(mblk_addr + 0x12, 2, 1)
-        qemu.write_memory(mblk_addr + 0x12, 2, flags | 2)
+        qemu.write_memory(mblk_addr + M_BLK_PKT_HDR_RCVIF_OFFSET, 4, 0)
+        qemu.write_memory(mblk_addr + M_BLK_PKT_HDR_LEN_OFFSET, 4, len(data))
+        qemu.write_memory(mblk_addr + M_BLK_M_TYPE_OFFSET, 1, MT_DATA)
+        flags = qemu.read_memory(mblk_addr + M_BLK_M_FLAGS_OFFSET, 1, 1)
+        if len(data) >= 6 and data[:6] == b"\xff\xff\xff\xff\xff\xff":
+            flags |= M_BCAST
+        qemu.write_memory(mblk_addr + M_BLK_M_FLAGS_OFFSET, 1, flags | M_EXT | M_PKTHDR)
         log.debug("Incoming Mblk: %s", self.get_packetdata(qemu, mblk_addr))
 
     @bp_handler(["netTupleGet_return"])
@@ -348,7 +368,15 @@ class Ethernet(BPHandler):
             raise TypeError("Failed to get netTuple")
         frame = self.eth_model.get_rx_frame(self.get_eth_id(qemu))
         self.set_mblk(qemu, m_blk, frame)
-        return qemu.call("muxReceive", [self.p_dev, m_blk], self, "receive_done")
+        ether_type = 0
+        if frame is not None and len(frame) >= 14:
+            ether_type = int.from_bytes(frame[12:14], "big")
+        return qemu.call(
+            "muxTkReceive",
+            [self.p_dev, m_blk, 14, ether_type, 0, 0],
+            self,
+            "receive_done",
+        )
 
     # Method is broken, using multiple instance variable that are not defined
     # @bp_handler(["call_muxReceive"])
