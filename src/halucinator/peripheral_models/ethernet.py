@@ -7,6 +7,7 @@ import binascii
 import logging
 import time
 from collections import defaultdict, deque
+from threading import Timer
 from typing import DefaultDict, Deque, Optional, Tuple, Union
 
 from typing import TypedDict
@@ -103,6 +104,7 @@ class EthernetModel(object):
     calc_crc = True
     rx_frame_isr: Optional[int] = None
     rx_isr_enabled = False
+    rx_irq_armed: DefaultDict[InterfaceId, bool] = defaultdict(lambda: True)
     frame_times: DefaultDict[InterfaceId, Deque[float]] = defaultdict(
         deque
     )  # Used to record reception time
@@ -134,6 +136,22 @@ class EthernetModel(object):
     def enable_rx_isr_bp(cls, interface_id: InterfaceId) -> None:
         if interface_id in cls.interfaces:
             cls.interfaces[interface_id].enable_irq_bp()
+            cls.rx_irq_armed[interface_id] = True
+            if cls.frame_queues[interface_id]:
+                Timer(0.01, cls._fire_queued_rx_qmp, args=(interface_id,)).start()
+
+    @classmethod
+    def _fire_queued_rx_qmp(cls, interface_id: InterfaceId) -> None:
+        interface = cls.interfaces.get(interface_id)
+        if (
+            interface is not None
+            and interface.enabled
+            and interface.irq_num is not None
+            and cls.frame_queues[interface_id]
+            and cls.rx_irq_armed[interface_id]
+        ):
+            cls.rx_irq_armed[interface_id] = False
+            Interrupts.set_active_qmp(interface.irq_num)
 
     @classmethod
     def disable_rx_isr(self, interface_id: InterfaceId) -> None:
@@ -180,15 +198,50 @@ class EthernetModel(object):
         interface_id = msg["interface_id"]
         log.info("Adding Frame to: %s" % interface_id)
         frame = msg["frame"]
-        cls.frame_queues[interface_id].append(frame)
-        cls.frame_times[interface_id].append(time.time())
+        rx_time = time.time()
+        if cls._is_tcp_syn(frame):
+            cls._drop_queued_tcp_syns(interface_id)
+        if len(frame) >= 14 and frame[12:14] == b"\x08\x06":
+            cls.frame_queues[interface_id].appendleft(frame)
+            cls.frame_times[interface_id].appendleft(rx_time)
+        else:
+            cls.frame_queues[interface_id].append(frame)
+            cls.frame_times[interface_id].append(rx_time)
         log.info("Adding Frame to: %s" % interface_id)
         interface = cls.interfaces.get(interface_id)
         if interface is not None and interface.enabled and interface.irq_num is not None:
-            Interrupts.enabled[interface.irq_num] = True
-            Interrupts.set_active_qmp(interface.irq_num)
+            if cls.rx_irq_armed[interface_id]:
+                cls.rx_irq_armed[interface_id] = False
+                Interrupts.enable_qmp(interface.irq_num)
+                Interrupts.set_active_qmp(interface.irq_num)
         if cls.rx_frame_isr is not None and cls.rx_isr_enabled:
             Interrupts.trigger_interrupt(cls.rx_frame_isr, "Ethernet_RX_Frame")
+
+    @classmethod
+    def _is_tcp_syn(cls, frame: bytes) -> bool:
+        if len(frame) < 54 or frame[12:14] != b"\x08\x00" or frame[23] != 6:
+            return False
+        ihl = (frame[14] & 0x0F) * 4
+        tcp_offset = 14 + ihl
+        if len(frame) <= tcp_offset + 13:
+            return False
+        flags = frame[tcp_offset + 13]
+        return flags & 0x02 != 0 and flags & 0x10 == 0
+
+    @classmethod
+    def _drop_queued_tcp_syns(cls, interface_id: InterfaceId) -> None:
+        frames = cls.frame_queues[interface_id]
+        times = cls.frame_times[interface_id]
+        kept_frames: Deque[bytes] = deque()
+        kept_times: Deque[float] = deque()
+        while frames and times:
+            frame = frames.popleft()
+            rx_time = times.popleft()
+            if not cls._is_tcp_syn(frame):
+                kept_frames.append(frame)
+                kept_times.append(rx_time)
+        cls.frame_queues[interface_id] = kept_frames
+        cls.frame_times[interface_id] = kept_times
 
     @classmethod
     def get_rx_frame(

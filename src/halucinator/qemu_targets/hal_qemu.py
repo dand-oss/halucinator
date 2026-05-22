@@ -291,7 +291,7 @@ class HALQemuTarget(QemuTarget):
         """
         addr = self._get_irq_addr(irq_num)
         value = self.read_memory(addr, 1, 1)
-        self.write_memory(addr, 1, value & 1)  # lowest bit controls state
+        self.write_memory(addr, 1, value | 1)  # lowest bit controls state
 
     def irq_clear_bp(self, irq_num: int = 1) -> None:
         """
@@ -309,7 +309,7 @@ class HALQemuTarget(QemuTarget):
         addr = self._get_irq_addr(irq_num)
         value = self.read_memory(addr, 1, 1)
         self.write_memory(
-            addr, 1, value & 0x80
+            addr, 1, value | 0x80
         )  # upper most bit controls enable
 
     def irq_disable_bp(self, irq_num: int) -> None:

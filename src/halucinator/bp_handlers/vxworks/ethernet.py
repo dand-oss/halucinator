@@ -7,24 +7,30 @@ from __future__ import annotations
 
 import logging
 import types
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
 
 from halucinator.bp_handlers.bp_handler import BPHandler, HandlerFunction, bp_handler
 from halucinator.peripheral_models.ethernet import EthernetModel
-from halucinator.peripheral_models.interrupts import Interrupts
 
 if TYPE_CHECKING:
     from halucinator.qemu_targets.hal_qemu import HALQemuTarget
 
 log = logging.getLogger(__name__)
+TRACE_LOG = Path("scadapack-trace.log")
+
+
+def _trace(message: str) -> None:
+    with TRACE_LOG.open("a") as trace_file:
+        trace_file.write(f"{message}\n")
 
 # pylint: disable=fixme
 
 M_BLK_M_TYPE_OFFSET = 0x10
 M_BLK_M_FLAGS_OFFSET = 0x12
-M_BLK_PKT_HDR_RCVIF_OFFSET = 0x14
-M_BLK_PKT_HDR_LEN_OFFSET = 0x18
-M_BLK_P_CL_BLK_OFFSET = 0x1C
+M_BLK_PKT_HDR_RCVIF_OFFSET = 0x18
+M_BLK_PKT_HDR_LEN_OFFSET = 0x1C
+M_BLK_P_CL_BLK_OFFSET = 0x20
 
 M_EXT = 0x01
 M_PKTHDR = 0x02
@@ -342,11 +348,12 @@ class Ethernet(BPHandler):
         ethernet_isr bp_handler
         """
         log.debug("ethernet_isr")
-        # eth_id = self.get_eth_id(qemu)
-        # This will cause handleEndIntRcv below to execute
-        return qemu.call(
-            "netJobAdd", [self.handle_end_int_rcv_addr, qemu.get_arg(0), 0, 0, 0, 0]
+        _trace(
+            "ethernet_isr "
+            f"bp={bp_addr:#x} p_dev={qemu.get_arg(0):#x} "
+            f"handle_end_int_rcv={self.handle_end_int_rcv_addr:#x}"
         )
+        return self.handle_end_int_rcv(qemu, bp_addr)
 
     @bp_handler(["handleEndIntRcv"])
     def handle_end_int_rcv(self, qemu: HALQemuTarget, bp_addr: int) -> Any:  # pylint: disable=unused-argument
@@ -354,6 +361,11 @@ class Ethernet(BPHandler):
         self.p_dev = qemu.get_arg(0)
         self.p_net_pool = qemu.read_memory(self.p_dev + self.net_pool_offset, 4, 1)
         self.cl_pool_id = qemu.read_memory(self.p_dev + self.cl_pool_id_offset, 4, 1)
+        _trace(
+            "handle_end_int_rcv "
+            f"p_dev={self.p_dev:#x} p_net_pool={self.p_net_pool:#x} "
+            f"cl_pool_id={self.cl_pool_id:#x}"
+        )
         # 0x5f =1520 (big enough for ethernet frame)
         return qemu.call(
             "netTupleGet", [self.p_net_pool, 0x5F0, 1, 1], self, "netTupleGet_return"
@@ -367,6 +379,9 @@ class Ethernet(BPHandler):
         #     1,
         # )
         m_data = qemu.read_memory((mblk_addr + 0x8), 4, 1)
+        if m_data % 4 == 0:
+            m_data += 2
+        qemu.write_memory(mblk_addr + 0x8, 4, m_data)
         qemu.write_memory(m_data, 1, data, len(data), raw=True)
         m_len = mblk_addr + 0xC
         qemu.write_memory(m_len, 4, len(data))
@@ -388,8 +403,10 @@ class Ethernet(BPHandler):
         frame = self.eth_model.get_rx_frame(self.get_eth_id(qemu))
         if frame is None:
             log.debug("No queued Ethernet frame available for netTuple %#x", m_blk)
+            _trace(f"netTupleGet_return m_blk={m_blk:#x} frame=<none>")
             self.eth_model.enable_rx_isr_bp(self.get_eth_id(qemu))
             return True, None
+        _trace(f"netTupleGet_return m_blk={m_blk:#x} frame_len={len(frame)}")
         self.set_mblk(qemu, m_blk, frame)
         return qemu.call(
             "muxReceive",
@@ -420,11 +437,9 @@ class Ethernet(BPHandler):
         )
         eth_id = self.get_eth_id(qemu)
         queued_frames, _ = self.eth_model.get_frame_info(eth_id)
-        if queued_frames and eth_id in self.eth_model.interfaces:
-            irq_num = self.eth_model.interfaces[eth_id].irq_num
-            if irq_num is not None:
-                Interrupts.enabled[irq_num] = True
-                Interrupts.set_active_bp(irq_num)
-        else:
-            self.eth_model.enable_rx_isr_bp(eth_id)
+        _trace(
+            "receive_done "
+            f"eth_id={eth_id} queued_frames={queued_frames}"
+        )
+        self.eth_model.enable_rx_isr_bp(eth_id)
         return True, None
