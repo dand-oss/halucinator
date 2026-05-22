@@ -7,10 +7,11 @@ from __future__ import annotations
 
 import logging
 import types
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type
+from typing import TYPE_CHECKING, Any, Dict, Optional, Tuple, Type
 
 from halucinator.bp_handlers.bp_handler import BPHandler, HandlerFunction, bp_handler
 from halucinator.peripheral_models.ethernet import EthernetModel
+from halucinator.peripheral_models.interrupts import Interrupts
 
 if TYPE_CHECKING:
     from halucinator.qemu_targets.hal_qemu import HALQemuTarget
@@ -385,6 +386,10 @@ class Ethernet(BPHandler):
         if m_blk == 0:
             raise TypeError("Failed to get netTuple")
         frame = self.eth_model.get_rx_frame(self.get_eth_id(qemu))
+        if frame is None:
+            log.debug("No queued Ethernet frame available for netTuple %#x", m_blk)
+            self.eth_model.enable_rx_isr_bp(self.get_eth_id(qemu))
+            return True, None
         self.set_mblk(qemu, m_blk, frame)
         return qemu.call(
             "muxReceive",
@@ -414,5 +419,12 @@ class Ethernet(BPHandler):
             "DONE With MuxReceive ...................................................."
         )
         eth_id = self.get_eth_id(qemu)
-        self.eth_model.enable_rx_isr_bp(eth_id)
+        queued_frames, _ = self.eth_model.get_frame_info(eth_id)
+        if queued_frames and eth_id in self.eth_model.interfaces:
+            irq_num = self.eth_model.interfaces[eth_id].irq_num
+            if irq_num is not None:
+                Interrupts.enabled[irq_num] = True
+                Interrupts.set_active_bp(irq_num)
+        else:
+            self.eth_model.enable_rx_isr_bp(eth_id)
         return True, None

@@ -150,6 +150,8 @@ class EthernetModel(object):
 
     @classmethod
     def flush(cls, interface_id: InterfaceId) -> None:
+        cls.frame_queues[interface_id].clear()
+        cls.frame_times[interface_id].clear()
         cls.interfaces[interface_id].flush()
 
     @classmethod
@@ -183,6 +185,7 @@ class EthernetModel(object):
         log.info("Adding Frame to: %s" % interface_id)
         interface = cls.interfaces.get(interface_id)
         if interface is not None and interface.enabled and interface.irq_num is not None:
+            Interrupts.enabled[interface.irq_num] = True
             Interrupts.set_active_qmp(interface.irq_num)
         if cls.rx_frame_isr is not None and cls.rx_isr_enabled:
             Interrupts.trigger_interrupt(cls.rx_frame_isr, "Ethernet_RX_Frame")
