@@ -305,6 +305,18 @@ def emulate_binary(
 
     qemu.gdb_port = gdb_port
     avatar.config = config
+
+    # Start GDB RSP server before init_targets(). Some rehost targets can
+    # spend a long time in QEMU/Avatar initialization, and the operator debug
+    # endpoint must bind before later target setup can block attach.
+    if gdb_server_port is not None:
+        avatar.load_plugin('gdbserver')
+        server = avatar.spawn_gdb_server(
+            qemu, gdb_server_port,
+            stop_filter=lambda target, pc: intercepts.check_hal_bp(pc),
+        )
+        log.info("GDB RSP server listening on port %d", gdb_server_port)
+
     log.info("Initializing Avatar Targets")
     avatar.init_targets()
 
@@ -331,15 +343,6 @@ def emulate_binary(
         sys.exit(0)
 
     signal.signal(signal.SIGINT, signal_handler)
-
-    # Start GDB RSP server if requested
-    if gdb_server_port is not None:
-        avatar.load_plugin('gdbserver')
-        server = avatar.spawn_gdb_server(
-            qemu, gdb_server_port,
-            stop_filter=lambda target, pc: intercepts.check_hal_bp(pc),
-        )
-        log.info("GDB RSP server listening on port %d", gdb_server_port)
 
     # Start DAP server if requested
     if dap_port is not None:
